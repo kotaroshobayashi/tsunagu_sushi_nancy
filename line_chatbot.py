@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -12,12 +13,14 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from zoneinfo import ZoneInfo
 
 from data_sources import build_project_snapshot
-from weekly_report_bot import generate_with_gemini
+from weekly_report_bot import generate_weekly_report, load_settings, send_line_message
 
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+JST = ZoneInfo("Asia/Tokyo")
 
 
 def load_config() -> dict[str, str]:
@@ -27,6 +30,8 @@ def load_config() -> dict[str, str]:
         "line_channel_access_token": os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+        "cron_secret": os.getenv("CRON_SECRET", ""),
+        "test_report_date": os.getenv("TEST_REPORT_DATE", ""),
     }
     return config
 
@@ -87,6 +92,12 @@ def reply_to_line(channel_access_token: str, reply_token: str, message_text: str
         timeout=30,
     )
     response.raise_for_status()
+
+
+def verify_cron_secret(auth_header: str | None, cron_secret: str) -> bool:
+    if not cron_secret:
+        return True
+    return auth_header == f"Bearer {cron_secret}"
 
 
 app = FastAPI()
@@ -153,6 +164,39 @@ async def webhook(
         )
 
     return JSONResponse({"ok": True})
+
+
+@app.get("/cron/test-weekly")
+def cron_test_weekly(authorization: str | None = Header(default=None)) -> JSONResponse:
+    config = get_config()
+    if not verify_cron_secret(authorization, config["cron_secret"]):
+        raise HTTPException(status_code=401, detail="Unauthorized cron invocation")
+
+    today_jst = datetime.now(JST).date().isoformat()
+    test_report_date = config["test_report_date"]
+    if test_report_date and today_jst != test_report_date:
+        return JSONResponse(
+            {
+                "ok": True,
+                "skipped": True,
+                "reason": "test date mismatch",
+                "today_jst": today_jst,
+                "expected_date": test_report_date,
+            }
+        )
+
+    settings = load_settings()
+    source_data = {
+        "generated_at": datetime.now(settings.timezone).isoformat(),
+        **build_project_snapshot(),
+    }
+    report = generate_weekly_report(settings, source_data)
+    test_message = f"【テスト送信】{today_jst} 13:50実行予定の確認です。\n\n{report}"
+    send_line_message(settings, test_message)
+
+    return JSONResponse(
+        {"ok": True, "sent": True, "today_jst": today_jst, "target": "LINE_TARGET_ID"}
+    )
 
 
 if __name__ == "__main__":
