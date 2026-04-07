@@ -101,6 +101,7 @@ def verify_cron_secret(auth_header: str | None, cron_secret: str) -> bool:
 
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
 
 
 def get_config() -> dict[str, str]:
@@ -147,6 +148,15 @@ async def webhook(
         message = event.get("message", {})
         if message.get("type") != "text":
             continue
+
+        source = event.get("source", {})
+        logger.info(
+            "LINE source received: type=%s userId=%s groupId=%s roomId=%s",
+            source.get("type"),
+            source.get("userId"),
+            source.get("groupId"),
+            source.get("roomId"),
+        )
 
         user_message = message.get("text", "").strip()
         if not user_message:
