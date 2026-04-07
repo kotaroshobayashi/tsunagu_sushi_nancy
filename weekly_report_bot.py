@@ -10,13 +10,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from openpyxl import load_workbook
+
+from data_sources import build_project_snapshot
 
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -27,7 +27,6 @@ MAX_LINE_TEXT_LENGTH = 5000
 
 @dataclass
 class Settings:
-    workspace_dir: Path
     gemini_api_key: str
     gemini_model: str
     line_channel_access_token: str
@@ -57,19 +56,11 @@ def parse_args() -> argparse.Namespace:
 
 def load_settings() -> Settings:
     load_dotenv()
-
-    workspace_dir = Path(
-        os.getenv(
-            "WORKSPACE_DIR",
-            "/Users/kotaroshobayashi/Library/CloudStorage/GoogleDrive-shobayashi.kotaro@gmail.com/My Drive/TSUNAGU/SushiBiz/Nancy",
-        )
-    )
     gemini_api_key = require_env("GEMINI_API_KEY")
     line_channel_access_token = require_env("LINE_CHANNEL_ACCESS_TOKEN")
     line_target_id = require_env("LINE_TARGET_ID")
 
     return Settings(
-        workspace_dir=workspace_dir,
         gemini_api_key=gemini_api_key,
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
         line_channel_access_token=line_channel_access_token,
@@ -96,77 +87,13 @@ def configure_logging() -> None:
     )
 
 
-def read_readme(workspace_dir: Path) -> str:
-    path = workspace_dir / "README.md"
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def read_line_log(workspace_dir: Path, max_lines: int = 220) -> str:
-    candidates = sorted(workspace_dir.glob("[[]LINE[]]*.txt"))
-    if not candidates:
-        return ""
-
-    path = candidates[0]
-    lines = path.read_text(encoding="utf-8").splitlines()
-    trimmed = [line for line in lines if line.strip()][-max_lines:]
-    return "\n".join(trimmed)
-
-
-def read_application_tracker(workspace_dir: Path) -> dict[str, Any]:
-    tracker_path = workspace_dir / "申請管理.xlsx"
-    if not tracker_path.exists():
-        return {"rows": [], "status_summary": {}}
-
-    workbook = load_workbook(tracker_path, data_only=True)
-    sheet = workbook["申請一覧"]
-    rows = list(sheet.iter_rows(values_only=True))
-    headers = [str(value).strip() if value is not None else "" for value in rows[0]]
-
-    items: list[dict[str, Any]] = []
-    status_summary: dict[str, int] = {}
-
-    for row in rows[1:]:
-        if not any(row):
-            continue
-        item = {
-            headers[idx]: row[idx]
-            for idx in range(min(len(headers), len(row)))
-            if headers[idx]
-        }
-        items.append(item)
-        status = str(item.get("ステータス", "")).strip() or "未設定"
-        status_summary[status] = status_summary.get(status, 0) + 1
-
-    return {"rows": items, "status_summary": status_summary}
-
-
-def read_revenue_sheet_link(workspace_dir: Path) -> str:
-    gsheet_path = workspace_dir / "キッチンカー収支.gsheet"
-    if not gsheet_path.exists():
-        return ""
-
-    try:
-        data = json.loads(gsheet_path.read_text(encoding="utf-8"))
-        doc_id = data.get("doc_id", "")
-    except json.JSONDecodeError:
-        return ""
-
-    if not doc_id:
-        return ""
-    return f"https://docs.google.com/spreadsheets/d/{doc_id}/edit"
-
-
 def build_report_input(settings: Settings) -> dict[str, Any]:
-    tracker = read_application_tracker(settings.workspace_dir)
     now = datetime.now(settings.timezone)
+    snapshot = build_project_snapshot()
 
     return {
         "generated_at": now.isoformat(),
-        "workspace_dir": str(settings.workspace_dir),
-        "project_readme": read_readme(settings.workspace_dir),
-        "recent_line_log": read_line_log(settings.workspace_dir),
-        "application_tracker": tracker,
-        "revenue_sheet_url": read_revenue_sheet_link(settings.workspace_dir),
+        **snapshot,
     }
 
 
@@ -187,7 +114,7 @@ def generate_weekly_report(settings: Settings, source_data: dict[str, Any]) -> s
     )
 
     prompt = (
-        "以下のローカルプロジェクト情報を元に、週次レポートを作ってください。\n\n"
+        "以下のプロジェクト情報を元に、週次レポートを作ってください。\n\n"
         f"{json.dumps(source_data, ensure_ascii=False, indent=2)}"
     )
     return generate_with_gemini(

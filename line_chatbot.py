@@ -7,22 +7,17 @@ import hmac
 import json
 import logging
 import os
-from pathlib import Path
-from typing import Any
 
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from weekly_report_bot import build_report_input, generate_with_gemini
+from data_sources import build_project_snapshot
+from weekly_report_bot import generate_with_gemini
 
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
-DEFAULT_WORKSPACE_DIR = (
-    "/Users/kotaroshobayashi/Library/CloudStorage/GoogleDrive-shobayashi.kotaro@gmail.com/"
-    "My Drive/TSUNAGU/SushiBiz/Nancy"
-)
 
 
 def load_config() -> dict[str, str]:
@@ -32,10 +27,6 @@ def load_config() -> dict[str, str]:
         "line_channel_access_token": os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
-        "workspace_dir": os.getenv(
-            "WORKSPACE_DIR",
-            DEFAULT_WORKSPACE_DIR,
-        ),
     }
     return config
 
@@ -52,36 +43,17 @@ def verify_signature(channel_secret: str, body: bytes, signature: str | None) ->
     return hmac.compare_digest(expected, signature)
 
 
-def build_chat_context(workspace_dir: Path) -> dict[str, Any]:
-    from weekly_report_bot import Settings
-    from zoneinfo import ZoneInfo
-
-    dummy_settings = Settings(
-        workspace_dir=workspace_dir,
-        gemini_api_key="dummy",
-        gemini_model="gemini-2.0-flash",
-        line_channel_access_token="dummy",
-        line_target_id="dummy",
-        report_day=0,
-        report_hour=22,
-        report_minute=0,
-        timezone=ZoneInfo("Asia/Tokyo"),
-    )
-    return build_report_input(dummy_settings)
-
-
 def build_assistant_reply(
     *,
     user_message: str,
-    workspace_dir: Path,
     gemini_api_key: str,
     gemini_model: str,
 ) -> str:
-    source_data = build_chat_context(workspace_dir)
+    source_data = build_project_snapshot()
     system_instruction = (
         "You are the shared project assistant for the Nancy food event project. "
         "Answer in Japanese. "
-        "Base your answer only on the local project files and the latest conversation log. "
+        "Base your answer only on the current project data from Google Drive, Google Sheets, and the latest conversation log. "
         "If information is missing, say that it is not yet confirmed. "
         "Be practical and concise. "
         "When relevant, include current blockers, owners, and next actions."
@@ -171,7 +143,6 @@ async def webhook(
 
         reply_text = build_assistant_reply(
             user_message=user_message,
-            workspace_dir=Path(config["workspace_dir"]),
             gemini_api_key=config["gemini_api_key"],
             gemini_model=config["gemini_model"],
         )
