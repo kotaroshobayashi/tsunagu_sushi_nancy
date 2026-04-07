@@ -19,28 +19,25 @@ from weekly_report_bot import build_report_input, generate_with_gemini
 
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+DEFAULT_WORKSPACE_DIR = (
+    "/Users/kotaroshobayashi/Library/CloudStorage/GoogleDrive-shobayashi.kotaro@gmail.com/"
+    "My Drive/TSUNAGU/SushiBiz/Nancy"
+)
 
 
 def load_config() -> dict[str, str]:
     load_dotenv()
     config = {
-        "line_channel_secret": require_env("LINE_CHANNEL_SECRET"),
-        "line_channel_access_token": require_env("LINE_CHANNEL_ACCESS_TOKEN"),
-        "gemini_api_key": require_env("GEMINI_API_KEY"),
+        "line_channel_secret": os.getenv("LINE_CHANNEL_SECRET", ""),
+        "line_channel_access_token": os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
+        "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
         "workspace_dir": os.getenv(
             "WORKSPACE_DIR",
-            "/Users/kotaroshobayashi/Library/CloudStorage/GoogleDrive-shobayashi.kotaro@gmail.com/My Drive/TSUNAGU/SushiBiz/Nancy",
+            DEFAULT_WORKSPACE_DIR,
         ),
     }
     return config
-
-
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
 
 
 def verify_signature(channel_secret: str, body: bytes, signature: str | None) -> bool:
@@ -121,7 +118,24 @@ def reply_to_line(channel_access_token: str, reply_token: str, message_text: str
 
 
 app = FastAPI()
-config = load_config()
+
+
+def get_config() -> dict[str, str]:
+    config = load_config()
+    missing = [
+        name
+        for name, value in (
+            ("LINE_CHANNEL_SECRET", config["line_channel_secret"]),
+            ("LINE_CHANNEL_ACCESS_TOKEN", config["line_channel_access_token"]),
+            ("GEMINI_API_KEY", config["gemini_api_key"]),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
+    return config
 
 
 @app.get("/health")
@@ -134,6 +148,7 @@ async def webhook(
     request: Request,
     x_line_signature: str | None = Header(default=None),
 ) -> JSONResponse:
+    config = get_config()
     body = await request.body()
     if not verify_signature(config["line_channel_secret"], body, x_line_signature):
         raise HTTPException(status_code=401, detail="Invalid LINE signature")
