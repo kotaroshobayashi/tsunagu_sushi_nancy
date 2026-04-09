@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -17,8 +19,10 @@ from openpyxl import load_workbook
 
 GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
+GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 GOOGLE_DRIVE_API_BASE = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_SHEETS_API_BASE = "https://sheets.googleapis.com/v4/spreadsheets"
+GOOGLE_CALENDAR_API_BASE = "https://www.googleapis.com/calendar/v3/calendars"
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 
 
@@ -32,6 +36,8 @@ class DataSourceConfig:
     drive_application_tracker_file_id: str
     sheets_revenue_spreadsheet_id: str
     sheets_revenue_range: str
+    google_calendar_id: str
+    google_calendar_timezone: str
 
 
 def load_data_source_config() -> DataSourceConfig:
@@ -56,6 +62,10 @@ def load_data_source_config() -> DataSourceConfig:
         sheets_revenue_range=os.getenv(
             "GOOGLE_SHEETS_REVENUE_RANGE", "Summary!A1:Z50"
         ),
+        google_calendar_id=os.getenv("GOOGLE_CALENDAR_ID", ""),
+        google_calendar_timezone=os.getenv(
+            "GOOGLE_CALENDAR_TIMEZONE", "Asia/Tokyo"
+        ),
     )
 
 
@@ -75,6 +85,7 @@ def build_local_snapshot(workspace_dir: Path, max_line_log_lines: int = 220) -> 
         "application_tracker": read_local_application_tracker(workspace_dir),
         "revenue_sheet_url": read_local_revenue_sheet_link(workspace_dir),
         "revenue_sheet_preview": None,
+        "calendar_today": [],
     }
 
 
@@ -120,6 +131,14 @@ def build_google_workspace_snapshot(
         if config.sheets_revenue_spreadsheet_id
         else ""
     )
+    calendar_today = (
+        client.read_calendar_events_today(
+            config.google_calendar_id,
+            config.google_calendar_timezone,
+        )
+        if config.google_calendar_id
+        else []
+    )
 
     return {
         "data_source": "google_workspace",
@@ -129,6 +148,7 @@ def build_google_workspace_snapshot(
         "application_tracker": application_tracker,
         "revenue_sheet_url": revenue_sheet_url,
         "revenue_sheet_preview": revenue_sheet_preview,
+        "calendar_today": calendar_today,
     }
 
 
@@ -207,7 +227,7 @@ class GoogleWorkspaceClient:
         info = json.loads(raw_json)
         credentials = service_account.Credentials.from_service_account_info(
             info,
-            scopes=[GOOGLE_DRIVE_SCOPE, GOOGLE_SHEETS_SCOPE],
+            scopes=[GOOGLE_DRIVE_SCOPE, GOOGLE_SHEETS_SCOPE, GOOGLE_CALENDAR_SCOPE],
         )
         return cls(credentials)
 
@@ -266,3 +286,46 @@ class GoogleWorkspaceClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def read_calendar_events_today(
+        self,
+        calendar_id: str,
+        timezone_name: str,
+    ) -> list[dict[str, Any]]:
+        tz = ZoneInfo(timezone_name)
+        now = datetime.now(tz)
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day.replace(hour=23, minute=59, second=59)
+        encoded_calendar_id = quote(calendar_id, safe="")
+        response = requests.get(
+            f"{GOOGLE_CALENDAR_API_BASE}/{encoded_calendar_id}/events",
+            headers=self._authorized_headers(),
+            params={
+                "singleEvents": "true",
+                "orderBy": "startTime",
+                "timeMin": start_of_day.isoformat(),
+                "timeMax": end_of_day.isoformat(),
+                "timeZone": timezone_name,
+                "fields": (
+                    "items(id,summary,description,location,"
+                    "start(dateTime,date),end(dateTime,date),status,htmlLink)"
+                ),
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        items = response.json().get("items", [])
+        return [
+            {
+                "id": item.get("id"),
+                "summary": item.get("summary") or "(No title)",
+                "description": item.get("description"),
+                "location": item.get("location"),
+                "status": item.get("status"),
+                "start": item.get("start", {}),
+                "end": item.get("end", {}),
+                "htmlLink": item.get("htmlLink"),
+            }
+            for item in items
+            if item.get("status") != "cancelled"
+        ]

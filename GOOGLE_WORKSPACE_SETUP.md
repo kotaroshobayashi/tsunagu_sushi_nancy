@@ -14,6 +14,7 @@
 - LINE会話ログ
 - `申請管理.xlsx`
 - 収支スプレッドシート
+- Google Calendar の今日の予定
 
 ## 1. Google Cloud で service account を作る
 
@@ -31,6 +32,7 @@ service account の `client_email` を確認して、以下をそのメールア
 - LINEログファイル
 - `申請管理.xlsx`
 - 収支スプレッドシート
+- 参照したい Google Calendar
 
 注意:
 
@@ -63,6 +65,8 @@ Google Drive / Sheets のURLからIDを抜きます。
 - `GOOGLE_DRIVE_APPLICATION_TRACKER_FILE_ID`
 - `GOOGLE_SHEETS_REVENUE_SPREADSHEET_ID`
 - `GOOGLE_SHEETS_REVENUE_RANGE`
+- `GOOGLE_CALENDAR_ID`
+- `GOOGLE_CALENDAR_TIMEZONE`
 
 ## 5. GOOGLE_SERVICE_ACCOUNT_JSON の入れ方
 
@@ -86,6 +90,10 @@ Google Drive / Sheets のURLからIDを抜きます。
   - Google Sheets
 - `GOOGLE_SHEETS_REVENUE_RANGE`
   - 例: `Summary!A1:Z50`
+- `GOOGLE_CALENDAR_ID`
+  - 個人メインカレンダーなら通常は Gmail アドレス
+- `GOOGLE_CALENDAR_TIMEZONE`
+  - 例: `Asia/Tokyo`
 
 ## 7. デプロイ後の確認
 
