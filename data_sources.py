@@ -100,14 +100,14 @@ def build_google_workspace_snapshot(
 
     readme_text = safe_read(
         warnings,
-        "README",
+        f"README(file_id={config.drive_readme_file_id or 'unset'})",
         lambda: client.read_drive_text(config.drive_readme_file_id)
         if config.drive_readme_file_id
         else "",
     )
     line_log_text = safe_read(
         warnings,
-        "LINE_LOG",
+        f"LINE_LOG(file_id={config.drive_line_log_file_id or 'unset'})",
         lambda: client.read_drive_text(config.drive_line_log_file_id)
         if config.drive_line_log_file_id
         else "",
@@ -118,7 +118,7 @@ def build_google_workspace_snapshot(
 
     application_tracker = safe_read(
         warnings,
-        "APPLICATION_TRACKER",
+        f"APPLICATION_TRACKER(file_id={config.drive_application_tracker_file_id or 'unset'})",
         lambda: client.read_application_tracker_xlsx(
             config.drive_application_tracker_file_id
         )
@@ -128,7 +128,7 @@ def build_google_workspace_snapshot(
 
     revenue_sheet_preview = safe_read(
         warnings,
-        "REVENUE_SHEET",
+        f"REVENUE_SHEET(spreadsheet_id={config.sheets_revenue_spreadsheet_id or 'unset'})",
         lambda: client.read_sheet_values(
             config.sheets_revenue_spreadsheet_id,
             config.sheets_revenue_range,
@@ -144,7 +144,7 @@ def build_google_workspace_snapshot(
     )
     calendar_today = safe_read(
         warnings,
-        "GOOGLE_CALENDAR",
+        f"GOOGLE_CALENDAR(calendar_id={config.google_calendar_id or 'unset'})",
         lambda: client.read_calendar_events_today(
             config.google_calendar_id,
             config.google_calendar_timezone,

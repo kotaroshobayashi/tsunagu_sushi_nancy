@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from zoneinfo import ZoneInfo
 
-from data_sources import build_project_snapshot
+from data_sources import build_project_snapshot, load_data_source_config
 from weekly_report_bot import (
     generate_weekly_report,
     generate_with_gemini,
@@ -107,12 +107,17 @@ def build_daily_schedule_message(
         "以下のプロジェクト情報を元に、本日のスケジュール通知を作ってください。\n\n"
         f"{json.dumps(source_data, ensure_ascii=False, indent=2)}"
     )
-    return generate_with_gemini(
+    message = generate_with_gemini(
         api_key=gemini_api_key,
         model=gemini_model,
         system_instruction=system_instruction,
         user_prompt=user_prompt,
     )
+    warnings = source_data.get("data_warnings") or []
+    if warnings:
+        warning_lines = "\n".join(f"  ・{w}" for w in warnings)
+        message = message + f"\n\n⚠️ データ取得エラー ({len(warnings)}件):\n{warning_lines}"
+    return message
 
 
 def reply_to_line(channel_access_token: str, reply_token: str, message_text: str) -> None:
@@ -316,6 +321,40 @@ def cron_daily_schedule(
             "today_jst": datetime.now(JST).date().isoformat(),
         }
     )
+
+
+@app.get("/debug/data-sources")
+def debug_data_sources(authorization: str | None = Header(default=None)) -> JSONResponse:
+    config = get_config()
+    if not verify_cron_secret(authorization, config["cron_secret"]):
+        raise HTTPException(status_code=401, detail="Unauthorized debug invocation")
+    try:
+        cfg = load_data_source_config()
+        snapshot = build_project_snapshot()
+        return JSONResponse({
+            "ok": True,
+            "data_source": cfg.source_type,
+            "env_check": {
+                "GOOGLE_DRIVE_README_FILE_ID": cfg.drive_readme_file_id or "(unset)",
+                "GOOGLE_DRIVE_LINE_LOG_FILE_ID": cfg.drive_line_log_file_id or "(unset)",
+                "GOOGLE_DRIVE_APPLICATION_TRACKER_FILE_ID": cfg.drive_application_tracker_file_id or "(unset)",
+                "GOOGLE_SHEETS_REVENUE_SPREADSHEET_ID": cfg.sheets_revenue_spreadsheet_id or "(unset)",
+                "GOOGLE_CALENDAR_ID": cfg.google_calendar_id or "(unset)",
+                "GOOGLE_SERVICE_ACCOUNT_JSON": "set" if cfg.google_service_account_json else "(unset)",
+            },
+            "data_warnings": snapshot.get("data_warnings") or [],
+            "readme_chars": len(snapshot.get("project_readme") or ""),
+            "line_log_chars": len(snapshot.get("recent_line_log") or ""),
+            "application_tracker_rows": len((snapshot.get("application_tracker") or {}).get("rows", [])),
+            "revenue_sheet_preview_keys": list((snapshot.get("revenue_sheet_preview") or {}).keys()),
+            "calendar_today_count": len(snapshot.get("calendar_today") or []),
+        })
+    except Exception as exc:
+        logger.exception("data-sources debug failed")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error_type": exc.__class__.__name__, "error_message": str(exc)},
+        )
 
 
 @app.get("/debug/push-test")
