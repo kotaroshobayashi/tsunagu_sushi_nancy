@@ -16,7 +16,12 @@ from fastapi.responses import JSONResponse
 from zoneinfo import ZoneInfo
 
 from data_sources import build_project_snapshot
-from weekly_report_bot import generate_weekly_report, load_settings, send_line_message
+from weekly_report_bot import (
+    generate_weekly_report,
+    generate_with_gemini,
+    load_settings,
+    send_line_message,
+)
 
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
@@ -67,6 +72,39 @@ def build_assistant_reply(
         "ユーザーからの質問:\n"
         f"{user_message}\n\n"
         "以下が現在のプロジェクト情報です。これを元に回答してください。\n"
+        f"{json.dumps(source_data, ensure_ascii=False, indent=2)}"
+    )
+    return generate_with_gemini(
+        api_key=gemini_api_key,
+        model=gemini_model,
+        system_instruction=system_instruction,
+        user_prompt=user_prompt,
+    )
+
+
+def build_daily_schedule_message(
+    *,
+    gemini_api_key: str,
+    gemini_model: str,
+) -> str:
+    today_jst = datetime.now(JST)
+    source_data = build_project_snapshot()
+    system_instruction = (
+        "You are an operations assistant for a Japanese/French food event project. "
+        "Create a concise daily morning briefing in Japanese for the project owner. "
+        "Use exact dates. "
+        "Focus on today's schedule, urgent tasks, deadlines, blockers, and who should act. "
+        "If today's concrete schedule is not explicitly confirmed in the project data, say so clearly. "
+        "Keep the message readable in LINE and under 2500 Japanese characters. "
+        "Use this structure exactly:\n"
+        "【本日の日付】\n"
+        "【本日の予定】\n"
+        "【今日やるべきこと】\n"
+        "【確認待ち・注意点】"
+    )
+    user_prompt = (
+        f"今日は {today_jst.strftime('%Y-%m-%d (%a)')} です。"
+        "以下のプロジェクト情報を元に、本日のスケジュール通知を作ってください。\n\n"
         f"{json.dumps(source_data, ensure_ascii=False, indent=2)}"
     )
     return generate_with_gemini(
@@ -249,6 +287,34 @@ def cron_test_weekly(authorization: str | None = Header(default=None)) -> JSONRe
 
     return JSONResponse(
         {"ok": True, "sent": True, "today_jst": today_jst, "target": "LINE_TARGET_ID"}
+    )
+
+
+@app.get("/cron/daily-schedule")
+def cron_daily_schedule(
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    config = get_config()
+    if not verify_cron_secret(authorization, config["cron_secret"]):
+        raise HTTPException(status_code=401, detail="Unauthorized cron invocation")
+
+    settings = load_settings()
+    message = build_daily_schedule_message(
+        gemini_api_key=config["gemini_api_key"],
+        gemini_model=config["gemini_model"],
+    )
+    push_to_line(
+        channel_access_token=settings.line_channel_access_token,
+        to=settings.line_target_id,
+        message_text=message,
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "sent": True,
+            "type": "daily_schedule",
+            "today_jst": datetime.now(JST).date().isoformat(),
+        }
     )
 
 
