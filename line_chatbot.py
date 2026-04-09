@@ -151,11 +151,11 @@ async def webhook(
 
         source = event.get("source", {})
         logger.info(
-            "LINE source received: type=%s userId=%s groupId=%s roomId=%s",
-            source.get("type"),
-            source.get("userId"),
-            source.get("groupId"),
-            source.get("roomId"),
+            f"LINE source received: "
+            f"type={source.get('type')} "
+            f"userId={source.get('userId')} "
+            f"groupId={source.get('groupId')} "
+            f"roomId={source.get('roomId')}"
         )
 
         user_message = message.get("text", "").strip()
