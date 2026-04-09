@@ -91,7 +91,36 @@ def reply_to_line(channel_access_token: str, reply_token: str, message_text: str
         json=payload,
         timeout=30,
     )
-    response.raise_for_status()
+    if not response.ok:
+        logger.error(
+            "LINE reply failed: status=%s body=%s",
+            response.status_code,
+            response.text,
+        )
+        response.raise_for_status()
+
+
+def push_to_line(channel_access_token: str, to: str, message_text: str) -> None:
+    payload = {
+        "to": to,
+        "messages": [{"type": "text", "text": message_text[:5000]}],
+    }
+    response = requests.post(
+        "https://api.line.me/v2/bot/message/push",
+        headers={
+            "Authorization": f"Bearer {channel_access_token}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+    if not response.ok:
+        logger.error(
+            "LINE push failed: status=%s body=%s",
+            response.status_code,
+            response.text,
+        )
+        response.raise_for_status()
 
 
 def verify_cron_secret(auth_header: str | None, cron_secret: str) -> bool:
@@ -221,6 +250,21 @@ def cron_test_weekly(authorization: str | None = Header(default=None)) -> JSONRe
     return JSONResponse(
         {"ok": True, "sent": True, "today_jst": today_jst, "target": "LINE_TARGET_ID"}
     )
+
+
+@app.get("/debug/push-test")
+def debug_push_test(authorization: str | None = Header(default=None)) -> JSONResponse:
+    config = get_config()
+    if not verify_cron_secret(authorization, config["cron_secret"]):
+        raise HTTPException(status_code=401, detail="Unauthorized debug invocation")
+
+    settings = load_settings()
+    push_to_line(
+        channel_access_token=settings.line_channel_access_token,
+        to=settings.line_target_id,
+        message_text="debug push test from vercel",
+    )
+    return JSONResponse({"ok": True, "sent": True})
 
 
 if __name__ == "__main__":
