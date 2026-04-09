@@ -162,6 +162,20 @@ async def webhook(
         if not user_message:
             continue
 
+        if user_message.lower() in {"id", "userid", "whoami", "target"}:
+            reply_to_line(
+                channel_access_token=config["line_channel_access_token"],
+                reply_token=event["replyToken"],
+                message_text=(
+                    "LINE source info\n"
+                    f"type={source.get('type')}\n"
+                    f"userId={source.get('userId')}\n"
+                    f"groupId={source.get('groupId')}\n"
+                    f"roomId={source.get('roomId')}"
+                ),
+            )
+            continue
+
         reply_text = build_assistant_reply(
             user_message=user_message,
             gemini_api_key=config["gemini_api_key"],
