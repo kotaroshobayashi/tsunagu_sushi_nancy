@@ -96,34 +96,45 @@ def build_google_workspace_snapshot(
     client = GoogleWorkspaceClient.from_service_account_json(
         config.google_service_account_json
     )
+    warnings: list[str] = []
 
-    readme_text = (
-        client.read_drive_text(config.drive_readme_file_id)
+    readme_text = safe_read(
+        warnings,
+        "README",
+        lambda: client.read_drive_text(config.drive_readme_file_id)
         if config.drive_readme_file_id
-        else ""
+        else "",
     )
-    line_log_text = (
-        client.read_drive_text(config.drive_line_log_file_id)
+    line_log_text = safe_read(
+        warnings,
+        "LINE_LOG",
+        lambda: client.read_drive_text(config.drive_line_log_file_id)
         if config.drive_line_log_file_id
-        else ""
+        else "",
     )
     if line_log_text:
         trimmed = [line for line in line_log_text.splitlines() if line.strip()]
         line_log_text = "\n".join(trimmed[-max_line_log_lines:])
 
-    application_tracker = (
-        client.read_application_tracker_xlsx(config.drive_application_tracker_file_id)
+    application_tracker = safe_read(
+        warnings,
+        "APPLICATION_TRACKER",
+        lambda: client.read_application_tracker_xlsx(
+            config.drive_application_tracker_file_id
+        )
         if config.drive_application_tracker_file_id
-        else {"rows": [], "status_summary": {}}
+        else {"rows": [], "status_summary": {}},
     )
 
-    revenue_sheet_preview = (
-        client.read_sheet_values(
+    revenue_sheet_preview = safe_read(
+        warnings,
+        "REVENUE_SHEET",
+        lambda: client.read_sheet_values(
             config.sheets_revenue_spreadsheet_id,
             config.sheets_revenue_range,
         )
         if config.sheets_revenue_spreadsheet_id
-        else None
+        else None,
     )
 
     revenue_sheet_url = (
@@ -131,13 +142,15 @@ def build_google_workspace_snapshot(
         if config.sheets_revenue_spreadsheet_id
         else ""
     )
-    calendar_today = (
-        client.read_calendar_events_today(
+    calendar_today = safe_read(
+        warnings,
+        "GOOGLE_CALENDAR",
+        lambda: client.read_calendar_events_today(
             config.google_calendar_id,
             config.google_calendar_timezone,
         )
         if config.google_calendar_id
-        else []
+        else [],
     )
 
     return {
@@ -149,7 +162,24 @@ def build_google_workspace_snapshot(
         "revenue_sheet_url": revenue_sheet_url,
         "revenue_sheet_preview": revenue_sheet_preview,
         "calendar_today": calendar_today,
+        "data_warnings": warnings,
     }
+
+
+def safe_read(warnings: list[str], label: str, fn) -> Any:
+    try:
+        return fn()
+    except Exception as exc:
+        warnings.append(f"{label}: {exc.__class__.__name__}: {exc}")
+        return default_value_for(label)
+
+
+def default_value_for(label: str) -> Any:
+    if label == "APPLICATION_TRACKER":
+        return {"rows": [], "status_summary": {}}
+    if label == "GOOGLE_CALENDAR":
+        return []
+    return "" if label in {"README", "LINE_LOG"} else None
 
 
 def read_local_readme(workspace_dir: Path) -> str:
