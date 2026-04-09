@@ -340,25 +340,35 @@ def debug_daily_schedule(
     config = get_config()
     if not verify_cron_secret(authorization, config["cron_secret"]):
         raise HTTPException(status_code=401, detail="Unauthorized debug invocation")
-
-    settings = load_settings()
-    message = build_daily_schedule_message(
-        gemini_api_key=config["gemini_api_key"],
-        gemini_model=config["gemini_model"],
-    )
-    push_to_line(
-        channel_access_token=settings.line_channel_access_token,
-        to=settings.line_target_id,
-        message_text=message,
-    )
-    return JSONResponse(
-        {
-            "ok": True,
-            "sent": True,
-            "type": "daily_schedule_debug",
-            "today_jst": datetime.now(JST).date().isoformat(),
-        }
-    )
+    try:
+        settings = load_settings()
+        message = build_daily_schedule_message(
+            gemini_api_key=config["gemini_api_key"],
+            gemini_model=config["gemini_model"],
+        )
+        push_to_line(
+            channel_access_token=settings.line_channel_access_token,
+            to=settings.line_target_id,
+            message_text=message,
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "sent": True,
+                "type": "daily_schedule_debug",
+                "today_jst": datetime.now(JST).date().isoformat(),
+            }
+        )
+    except Exception as exc:
+        logger.exception("daily schedule debug failed")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error_type": exc.__class__.__name__,
+                "error_message": str(exc),
+            },
+        )
 
 
 if __name__ == "__main__":
