@@ -37,8 +37,18 @@ def load_config() -> dict[str, str]:
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
         "cron_secret": os.getenv("CRON_SECRET", ""),
         "test_report_date": os.getenv("TEST_REPORT_DATE", ""),
+        "line_sending_enabled": os.getenv("LINE_SENDING_ENABLED", "false"),
     }
     return config
+
+
+def line_sending_enabled(config: dict[str, str]) -> bool:
+    return config.get("line_sending_enabled", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def verify_signature(channel_secret: str, body: bytes, signature: str | None) -> bool:
@@ -86,9 +96,10 @@ def build_daily_schedule_message(
     *,
     gemini_api_key: str,
     gemini_model: str,
+    source_data: dict | None = None,
 ) -> str:
     today_jst = datetime.now(JST)
-    source_data = build_project_snapshot()
+    source_data = source_data or build_project_snapshot()
     system_instruction = (
         "You are an operations assistant for a Japanese/French food event project. "
         "Create a concise daily morning briefing in Japanese for the project owner. "
@@ -118,6 +129,11 @@ def build_daily_schedule_message(
         warning_lines = "\n".join(f"  ・{w}" for w in warnings)
         message = message + f"\n\n⚠️ データ取得エラー ({len(warnings)}件):\n{warning_lines}"
     return message
+
+
+def data_source_warnings(source_data: dict) -> list[str]:
+    warnings = source_data.get("data_warnings") or []
+    return [str(warning) for warning in warnings]
 
 
 def reply_to_line(channel_access_token: str, reply_token: str, message_text: str) -> None:
@@ -205,6 +221,10 @@ async def webhook(
     x_line_signature: str | None = Header(default=None),
 ) -> JSONResponse:
     config = get_config()
+    if not line_sending_enabled(config):
+        logger.info("LINE sending paused. Webhook accepted without reply.")
+        return JSONResponse({"ok": True, "paused": True})
+
     body = await request.body()
     if not verify_signature(config["line_channel_secret"], body, x_line_signature):
         raise HTTPException(status_code=401, detail="Invalid LINE signature")
@@ -267,6 +287,8 @@ def cron_test_weekly(authorization: str | None = Header(default=None)) -> JSONRe
     config = get_config()
     if not verify_cron_secret(authorization, config["cron_secret"]):
         raise HTTPException(status_code=401, detail="Unauthorized cron invocation")
+    if not line_sending_enabled(config):
+        return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
 
     today_jst = datetime.now(JST).date().isoformat()
     test_report_date = config["test_report_date"]
@@ -302,11 +324,27 @@ def cron_daily_schedule(
     config = get_config()
     if not verify_cron_secret(authorization, config["cron_secret"]):
         raise HTTPException(status_code=401, detail="Unauthorized cron invocation")
+    if not line_sending_enabled(config):
+        return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
 
     settings = load_settings()
+    source_data = build_project_snapshot()
+    warnings = data_source_warnings(source_data)
+    if warnings:
+        logger.warning("Daily LINE send skipped because data sources failed: %s", warnings)
+        return JSONResponse(
+            {
+                "ok": True,
+                "skipped": True,
+                "reason": "data source errors",
+                "warning_count": len(warnings),
+            }
+        )
+
     message = build_daily_schedule_message(
         gemini_api_key=config["gemini_api_key"],
         gemini_model=config["gemini_model"],
+        source_data=source_data,
     )
     push_to_line(
         channel_access_token=settings.line_channel_access_token,
@@ -362,6 +400,8 @@ def debug_push_test(authorization: str | None = Header(default=None)) -> JSONRes
     config = get_config()
     if not verify_cron_secret(authorization, config["cron_secret"]):
         raise HTTPException(status_code=401, detail="Unauthorized debug invocation")
+    if not line_sending_enabled(config):
+        return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
 
     settings = load_settings()
     push_to_line(
@@ -379,11 +419,31 @@ def debug_daily_schedule(
     config = get_config()
     if not verify_cron_secret(authorization, config["cron_secret"]):
         raise HTTPException(status_code=401, detail="Unauthorized debug invocation")
+    if not line_sending_enabled(config):
+        return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
     try:
         settings = load_settings()
+        source_data = build_project_snapshot()
+        warnings = data_source_warnings(source_data)
+        if warnings:
+            logger.warning(
+                "Daily LINE debug send skipped because data sources failed: %s",
+                warnings,
+            )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "data source errors",
+                    "warning_count": len(warnings),
+                    "warnings": warnings,
+                }
+            )
+
         message = build_daily_schedule_message(
             gemini_api_key=config["gemini_api_key"],
             gemini_model=config["gemini_model"],
+            source_data=source_data,
         )
         push_to_line(
             channel_access_token=settings.line_channel_access_token,
