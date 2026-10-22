@@ -8,6 +8,9 @@ import hmac
 import json
 import logging
 import os
+import re
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 import requests
 from dotenv import load_dotenv
@@ -129,6 +132,80 @@ def build_daily_schedule_message(
         warning_lines = "\n".join(f"  ・{w}" for w in warnings)
         message = message + f"\n\n⚠️ データ取得エラー ({len(warnings)}件):\n{warning_lines}"
     return message
+
+
+NEWS_QUERIES = (
+    '飲食 OR 外食 OR 食品 事業 when:1d',
+    'フランス 日本 イベント OR 観光 when:1d',
+    '日仏 ビジネス OR 観光 when:1d',
+)
+
+
+def fetch_latest_news() -> list[dict[str, str]]:
+    """Fetch current Japanese-language headlines from Google News RSS."""
+    now = datetime.now(JST)
+    cutoff_hours = 30
+    items: dict[str, dict[str, str]] = {}
+    for query in NEWS_QUERIES:
+        response = requests.get(
+            "https://news.google.com/rss/search",
+            params={"q": query, "hl": "ja", "gl": "JP", "ceid": "JP:ja"},
+            headers={"User-Agent": "TsunaguNewsBrief/1.0"},
+            timeout=20,
+        )
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        for entry in root.findall("./channel/item"):
+            title = (entry.findtext("title") or "").strip()
+            link = (entry.findtext("link") or "").strip()
+            published = (entry.findtext("pubDate") or "").strip()
+            source_node = entry.find("source")
+            source = (source_node.text or "").strip() if source_node is not None else ""
+            description = re.sub(r"<[^>]+>", " ", entry.findtext("description") or "")
+            description = re.sub(r"\s+", " ", description).strip()
+            if not title or not link:
+                continue
+            try:
+                published_at = parsedate_to_datetime(published)
+                if published_at.tzinfo is None:
+                    published_at = published_at.replace(tzinfo=JST)
+                age_hours = (now - published_at.astimezone(JST)).total_seconds() / 3600
+                if age_hours < -1 or age_hours > cutoff_hours:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            items.setdefault(link, {
+                "title": title,
+                "link": link,
+                "published": published,
+                "source": source,
+                "description": description[:800],
+            })
+    return list(items.values())[:12]
+
+
+def build_news_digest(*, gemini_api_key: str, gemini_model: str) -> str:
+    news_items = fetch_latest_news()
+    today = datetime.now(JST).strftime("%Y年%m月%d日")
+    if not news_items:
+        raise RuntimeError("No recent news items were returned by the news feeds")
+    system_instruction = (
+        "あなたは日本語の朝刊編集者です。提供されたニュース項目だけを使い、"
+        "日本・フランスの飲食、イベント、観光、関連ビジネスに関係する重要な記事を"
+        "最大5件選んで簡潔にまとめてください。外部知識で事実を補わず、推測しないでください。"
+        "各項目にタイトル、要約（1～2文）、配信元、元記事リンクを必ず付けてください。"
+        "リンクURLは入力のものをそのまま使います。最後に事業への示唆を最大2点、"
+        "記事から直接言える範囲で記載します。LINEで読みやすく、2500文字以内。"
+    )
+    return generate_with_gemini(
+        api_key=gemini_api_key,
+        model=gemini_model,
+        system_instruction=system_instruction,
+        user_prompt=(
+            f"{today} 朝のニュースです。記事の新しさと事業との関連性を優先してください。\n"
+            f"{json.dumps(news_items, ensure_ascii=False, indent=2)}"
+        ),
+    )
 
 
 def data_source_warnings(source_data: dict) -> list[str]:
@@ -318,7 +395,8 @@ def cron_test_weekly(authorization: str | None = Header(default=None)) -> JSONRe
 
 
 @app.get("/cron/daily-schedule")
-def cron_daily_schedule(
+@app.get("/cron/daily-news")
+def cron_daily_news(
     authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     config = get_config()
@@ -328,23 +406,9 @@ def cron_daily_schedule(
         return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
 
     settings = load_settings()
-    source_data = build_project_snapshot()
-    warnings = data_source_warnings(source_data)
-    if warnings:
-        logger.warning("Daily LINE send skipped because data sources failed: %s", warnings)
-        return JSONResponse(
-            {
-                "ok": True,
-                "skipped": True,
-                "reason": "data source errors",
-                "warning_count": len(warnings),
-            }
-        )
-
-    message = build_daily_schedule_message(
+    message = build_news_digest(
         gemini_api_key=config["gemini_api_key"],
         gemini_model=config["gemini_model"],
-        source_data=source_data,
     )
     push_to_line(
         channel_access_token=settings.line_channel_access_token,
@@ -355,7 +419,7 @@ def cron_daily_schedule(
         {
             "ok": True,
             "sent": True,
-            "type": "daily_schedule",
+            "type": "daily_news",
             "today_jst": datetime.now(JST).date().isoformat(),
         }
     )
