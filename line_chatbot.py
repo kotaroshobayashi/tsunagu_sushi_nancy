@@ -237,9 +237,13 @@ def reply_to_line(channel_access_token: str, reply_token: str, message_text: str
 
 
 def push_to_line(channel_access_token: str, to: str, message_text: str) -> None:
+    if not message_text.strip():
+        raise ValueError("LINE message must not be empty")
+    if len(message_text) > 5000:
+        raise ValueError("LINE message exceeds the 5000-character text limit")
     payload = {
         "to": to,
-        "messages": [{"type": "text", "text": message_text[:5000]}],
+        "messages": [{"type": "text", "text": message_text}],
     }
     response = requests.post(
         "https://api.line.me/v2/bot/message/push",
@@ -423,6 +427,39 @@ def cron_daily_news(
             "today_jst": datetime.now(JST).date().isoformat(),
         }
     )
+
+
+@app.post("/cron/codex-news")
+async def cron_codex_news(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Deliver a completed Codex-researched digest without invoking Gemini."""
+    config = load_config()
+    if not verify_cron_secret(authorization, config["cron_secret"]):
+        raise HTTPException(status_code=401, detail="Unauthorized Codex news delivery")
+    if not config["cron_secret"]:
+        raise HTTPException(status_code=503, detail="Codex news delivery is not configured")
+    if not line_sending_enabled(config):
+        return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Request body must be JSON") from exc
+    message = payload.get("text") if isinstance(payload, dict) else None
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(status_code=400, detail="JSON field 'text' must be a non-empty string")
+    if len(message) > 5000:
+        raise HTTPException(status_code=413, detail="LINE text must be at most 5000 characters")
+
+    settings = load_settings()
+    push_to_line(
+        channel_access_token=settings.line_channel_access_token,
+        to=settings.line_target_id,
+        message_text=message,
+    )
+    return JSONResponse({"ok": True, "sent": True, "type": "codex_news"})
 
 
 @app.get("/debug/data-sources")
