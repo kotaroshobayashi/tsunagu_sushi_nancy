@@ -39,6 +39,7 @@ def load_config() -> dict[str, str]:
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
         "cron_secret": os.getenv("CRON_SECRET", ""),
+        "codex_news_secret": os.getenv("CODEX_NEWS_SECRET", ""),
         "test_report_date": os.getenv("TEST_REPORT_DATE", ""),
         "line_sending_enabled": os.getenv("LINE_SENDING_ENABLED", "false"),
     }
@@ -436,10 +437,11 @@ async def cron_codex_news(
 ) -> JSONResponse:
     """Deliver a completed Codex-researched digest without invoking Gemini."""
     config = load_config()
-    if not verify_cron_secret(authorization, config["cron_secret"]):
-        raise HTTPException(status_code=401, detail="Unauthorized Codex news delivery")
-    if not config["cron_secret"]:
+    codex_news_secret = config["codex_news_secret"]
+    if not codex_news_secret:
         raise HTTPException(status_code=503, detail="Codex news delivery is not configured")
+    if not hmac.compare_digest(authorization or "", f"Bearer {codex_news_secret}"):
+        raise HTTPException(status_code=401, detail="Unauthorized Codex news delivery")
     if not line_sending_enabled(config):
         return JSONResponse({"ok": True, "skipped": True, "reason": "LINE sending paused"})
 
